@@ -24,7 +24,7 @@ const ProjectDetailPage: React.FC = () => {
         const projectData = await projectService.getProject(id);
         setProject(projectData);
       } catch (err) {
-        setError('無法加載項目詳情');
+        setError('無法載入項目詳情');
         console.error('Error fetching project:', err);
       } finally {
         setLoading(false);
@@ -44,6 +44,10 @@ const ProjectDetailPage: React.FC = () => {
       const txb = new TransactionBlock();
       const [coin] = txb.splitCoins(txb.gas, [txb.pure(amount)]);
       
+      // =======================================================================
+      // TODO: 將 '0x0' 替換部署後的真實 Package ID
+      // 例如: target: '0x123abc...def::bluelink::donate'
+      // =======================================================================
       txb.moveCall({
         target: '0x0::bluelink::donate', // Replace with actual package address
         arguments: [
@@ -69,7 +73,7 @@ const ProjectDetailPage: React.FC = () => {
       );
     } catch (err) {
       console.error('Error creating donation transaction:', err);
-      alert('創建交易失敗，請重試');
+      alert('建立交易失敗，請重試');
     } finally {
       setDonating(false);
     }
@@ -78,7 +82,7 @@ const ProjectDetailPage: React.FC = () => {
   if (loading) {
     return (
       <div className="flex justify-center items-center min-h-64">
-        <div className="text-lg">正在加載項目詳情...</div>
+        <div className="text-lg">正在載入項目詳情...</div>
       </div>
     );
   }
@@ -113,7 +117,7 @@ const ProjectDetailPage: React.FC = () => {
 
           <div className="mb-8">
             <div className="flex justify-between items-center mb-3">
-              <h2 className="text-xl font-semibold">籌款進度</h2>
+              <h2 className="text-xl font-semibold">募款進度</h2>
               <span className="text-lg font-bold text-blue-600">
                 {progressPercentage.toFixed(1)}%
               </span>
@@ -129,7 +133,7 @@ const ProjectDetailPage: React.FC = () => {
                 <div className="text-2xl font-bold text-blue-600">
                   {totalRaised.toFixed(2)} SUI
                 </div>
-                <div className="text-sm text-gray-600">已籌集</div>
+                <div className="text-sm text-gray-600">已募集</div>
               </div>
               <div className="text-center">
                 <div className="text-2xl font-bold text-gray-800">
@@ -168,7 +172,7 @@ const ProjectDetailPage: React.FC = () => {
                 </button>
               </div>
               <p className="text-sm text-gray-600 mt-2">
-                最少捐贈 0.1 SUI。您的捐贈將獲得一個 NFT 憑證作為證明。
+                最少捐贈 0.1 SUI。您的捐贈將獲得一個鏈上數位憑證作為證明。
               </p>
             </div>
           ) : (
@@ -181,7 +185,7 @@ const ProjectDetailPage: React.FC = () => {
           )}
 
           <div className="mt-8 pt-6 border-t border-gray-200">
-            <h3 className="text-lg font-semibold mb-2">項目創建者</h3>
+            <h3 className="text-lg font-semibold mb-2">項目建立者</h3>
             <div className="text-sm text-gray-600 font-mono">
               {project.creator}
             </div>

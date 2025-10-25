@@ -14,7 +14,7 @@ const HomePage: React.FC = () => {
         const projectsData = await projectService.getAllProjects();
         setProjects(projectsData);
       } catch (err) {
-        setError('無法加載項目列表');
+        setError('無法載入項目列表');
         console.error('Error fetching projects:', err);
       } finally {
         setLoading(false);
@@ -27,7 +27,7 @@ const HomePage: React.FC = () => {
   if (loading) {
     return (
       <div className="flex justify-center items-center min-h-64">
-        <div className="text-lg">正在加載項目...</div>
+        <div className="text-lg">正在載入項目...</div>
       </div>
     );
   }
@@ -44,10 +44,10 @@ const HomePage: React.FC = () => {
     <div className="max-w-7xl mx-auto">
       <div className="text-center mb-12">
         <h1 className="text-4xl font-bold text-gray-800 mb-4">
-          透明的可持續發展捐贈平台
+          透明的永續發展捐贈平台
         </h1>
         <p className="text-xl text-gray-600 max-w-3xl mx-auto">
-          使用區塊鏈技術確保資金流向透明，讓每一筆捐贈都能被追蹤，支持真正有意義的可持續發展項目。
+          使用區塊鏈技術確保資金流向透明，讓每一筆捐贈都能被追蹤，支持真正有意義的永續發展項目。
         </p>
       </div>
 
@@ -67,13 +67,13 @@ const HomePage: React.FC = () => {
             目前還沒有項目
           </h3>
           <p className="text-gray-600 mb-6">
-            成為第一個創建可持續發展項目的人！
+            成為第一個建立永續發展項目的人！
           </p>
           <a 
             href="/create" 
             className="bg-blue-600 text-white px-6 py-3 rounded-lg hover:bg-blue-700 transition-colors inline-block"
           >
-            創建項目
+            建立項目
           </a>
         </div>
       ) : (
