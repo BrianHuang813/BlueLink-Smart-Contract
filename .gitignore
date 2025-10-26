@@ -1,4 +1,5 @@
 build/*
+
 .trace
 .coverage*
-test/*
+FRONTEND_API_GUIDE.md

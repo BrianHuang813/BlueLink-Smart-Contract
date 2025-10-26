@@ -4,6 +4,7 @@ module blue_link::blue_link {
     use sui::balance::{Self, Balance};
     use sui::event;
     use sui::sui::SUI; // will use USDC or self-minted coin as currency.
+    use sui::clock::{Self, Clock};
     use std::string::{Self, String};
 
     
@@ -13,9 +14,8 @@ module blue_link::blue_link {
     const EInvalidParameter: u64 = 101; // Invalid parameter
 
     // Purchase related errors (2xx)
-    const EInsufficientPayment: u64 = 201; // Payment is insufficient
     const EPurchaseAmountIsZero: u64 = 202; // Purchase amount must be greater than zero
-    const EInsufficientTokensAvailable: u64 = 204; // Not enough tokens available
+    const EInsufficientTokensAvailable: u64 = 204; // Not enough capacity available
     
     // Bond management errors (3xx)
     const ENotBondIssuer: u64 = 300; // Only bond issuer can perform this action
@@ -36,9 +36,10 @@ module blue_link::blue_link {
         issuer: address, // Bond issuer
         issuer_name: String,
         bond_name: String,
-        total_supply: u64, // Total number of bond tokens
-        price: u64, // Price per token in USD stable coin
-        tokens_sold: u64, // Number of tokens sold
+        total_amount: u64, // Total bond amount (募集總額度)
+        amount_raised: u64, // Amount already raised (已募集金額)
+        amount_redeemed: u64, // Amount already redeemed (已贖回金額)
+        tokens_issued: u64, // Number of bond tokens issued (發行的債券代幣數量)
         tokens_redeemed: u64, // Number of tokens redeemed
         annual_interest_rate: u64, // Annual interest rate in basis points (e.g., 500 = 5%)
         maturity_date: u64, // Unix timestamp of maturity date
@@ -55,7 +56,7 @@ module blue_link::blue_link {
         project_id: ID, // Associated bond project
         token_number: u64, // Sequential token number
         owner: address, // Token owner
-        price: u64, // Price paid for this token
+        amount: u64, // Amount invested in this token (購買金額)
         purchase_date: u64, // Unix timestamp of purchase
         is_redeemed: bool, // Whether token has been redeemed
     }
@@ -75,9 +76,8 @@ module blue_link::blue_link {
     public struct BondTokensPurchased has copy, drop {
         project_id: ID,
         buyer: address,
-        quantity: u64,
-        total_amount: u64,
-        token_ids: vector<ID>,
+        token_id: ID,  // Single token ID
+        amount: u64,   // Purchase amount
     }
 
     // Redemption funds deposited event
@@ -102,6 +102,18 @@ module blue_link::blue_link {
         amount: u64,
     }
 
+    // Sale paused event
+    public struct SalePaused has copy, drop {
+        project_id: ID,
+        paused_by: address,
+    }
+
+    // Sale resumed event
+    public struct SaleResumed has copy, drop {
+        project_id: ID,
+        resumed_by: address,
+    }
+
 
     // --- Entry Functions ---
     
@@ -109,28 +121,29 @@ module blue_link::blue_link {
     entry fun create_bond_project(
         issuer_name: vector<u8>,
         bond_name: vector<u8>,
-        total_supply: u64,
-        price: u64,
+        total_amount: u64, // Total bond amount to raise (募集總額度)
         annual_interest_rate: u64, // in basis points
-        maturity_date: u64, // Unix timestamp
+        maturity_date: u64, // Unix timestamp in milliseconds
+        clock: &Clock,
         ctx: &mut TxContext
     ) {
-        assert!(total_supply > 0, EInvalidParameter);
-        assert!(price > 0, EInvalidParameter);
+        assert!(total_amount > 0, EInvalidParameter);
         
         let issuer = tx_context::sender(ctx);
         let project_id = object::new(ctx);
         let project_id_copy = object::uid_to_inner(&project_id);
-        let issue_date = tx_context::epoch(ctx);
+        let issue_date = clock::timestamp_ms(clock);
         
+        // Create bond project object on-chain
         let project = BondProject {
             id: project_id,
             issuer,
             issuer_name: string::utf8(issuer_name),
             bond_name: string::utf8(bond_name),
-            total_supply,
-            price,
-            tokens_sold: 0,
+            total_amount,
+            amount_raised: 0,
+            amount_redeemed: 0,
+            tokens_issued: 0,
             tokens_redeemed: 0,
             annual_interest_rate,
             maturity_date,
@@ -141,12 +154,13 @@ module blue_link::blue_link {
             redemption_pool: balance::zero<SUI>(),
         };
 
+        // Emit event of creating bond projects
         event::emit(BondProjectCreated {
             id: project_id_copy,
             issuer,
             bond_name: project.bond_name,
-            total_supply,
-            price,
+            total_supply: total_amount,
+            price: 0, // No longer applicable
             annual_interest_rate,
             maturity_date,
         });
@@ -154,63 +168,59 @@ module blue_link::blue_link {
         transfer::public_transfer(project, issuer);
     }
 
-    // Buy bond tokens
+    // Buy bond tokens - create ONE NFT for the purchase amount
     entry fun buy_bond_rwa_tokens(
         project: &mut BondProject,
-        quantity: u64,
         payment: Coin<SUI>,
+        clock: &Clock,
         ctx: &mut TxContext
     ) {
-        assert!(quantity > 0, EPurchaseAmountIsZero);
+        let purchase_amount = coin::value(&payment);
+        assert!(purchase_amount > 0, EPurchaseAmountIsZero);
+        assert!(project.active, EInvalidParameter); // Check if sale is active
         
-        // Check if enough tokens are available
-        let available_tokens = project.total_supply - project.tokens_sold;
-        assert!(available_tokens >= quantity, EInsufficientTokensAvailable);
-        
-        // Calculate required payment
-        let required_amount = project.price * quantity;
-        let payment_amount = coin::value(&payment);
-        assert!(payment_amount >= required_amount, EInsufficientPayment);
+        // Check if enough capacity remains
+        let remaining_capacity = project.total_amount - project.amount_raised;
+        assert!(remaining_capacity >= purchase_amount, EInsufficientTokensAvailable);
         
         let buyer = tx_context::sender(ctx);
         let project_id = object::uid_to_inner(&project.id);
-        let purchase_date = tx_context::epoch(ctx);
+        let purchase_date = clock::timestamp_ms(clock);
         
         // Add payment to raised funds
         let payment_balance = coin::into_balance(payment);
         balance::join(&mut project.raised_funds, payment_balance);
         
-        // Create bond tokens
-        let mut token_ids = vector::empty<ID>();
-        let mut i = 0;
-        while (i < quantity) {
-            let token_id = object::new(ctx);
-            let token_id_copy = object::uid_to_inner(&token_id);
-            vector::push_back(&mut token_ids, token_id_copy);
-            
-            let token = BondToken {
-                id: token_id,
-                project_id,
-                token_number: project.tokens_sold + i + 1,
-                owner: buyer,
-                price: project.price,
-                purchase_date,
-                is_redeemed: false,
-            };
-            
-            transfer::public_transfer(token, buyer);
-            i = i + 1;
+        // Create ONE bond token NFT with the purchase amount
+        let token_id = object::new(ctx);
+        let token_id_copy = object::uid_to_inner(&token_id);
+        
+        let token = BondToken {
+            id: token_id,
+            project_id,
+            token_number: project.tokens_issued + 1,
+            owner: buyer,
+            amount: purchase_amount,
+            purchase_date,
+            is_redeemed: false,
         };
         
+        transfer::public_transfer(token, buyer);
+        
         // Update project state
-        project.tokens_sold = project.tokens_sold + quantity;
+        project.tokens_issued = project.tokens_issued + 1;
+        project.amount_raised = project.amount_raised + purchase_amount;
+        
+        // Auto-close when fully funded
+        if (project.amount_raised >= project.total_amount) {
+            project.active = false;
+        };
         
         event::emit(BondTokensPurchased {
             project_id,
             buyer,
-            quantity,
-            total_amount: required_amount,
-            token_ids,
+            token_id: token_id_copy,
+            amount: purchase_amount,
         });
     }
 
@@ -218,6 +228,7 @@ module blue_link::blue_link {
     entry fun deposit_redemption_funds(
         project: &mut BondProject,
         payment: Coin<SUI>,
+        clock: &Clock,
         ctx: &TxContext
     ) {
         let depositor = tx_context::sender(ctx);
@@ -230,7 +241,7 @@ module blue_link::blue_link {
         balance::join(&mut project.redemption_pool, payment_balance);
         
         // Update status to redeemable if maturity date is reached
-        let current_time = tx_context::epoch(ctx);
+        let current_time = clock::timestamp_ms(clock);
         if (current_time >= project.maturity_date && project.redeemable != true){
             project.redeemable = true ;
         };
@@ -242,10 +253,11 @@ module blue_link::blue_link {
         });
     }
 
-    // Redeem bond token (burns the NFT)
+    // Buyer redeem bond token (burns the NFT)
     entry fun redeem_bond_token(
         project: &mut BondProject,
         token: BondToken,
+        clock: &Clock,
         ctx: &mut TxContext
     ) {
         let redeemer = tx_context::sender(ctx);
@@ -255,20 +267,19 @@ module blue_link::blue_link {
         assert!(!token.is_redeemed, EBondAlreadyRedeemed);
         
         // Verify bond has matured
-        let current_time = tx_context::epoch(ctx);
+        let current_time = clock::timestamp_ms(clock);
         assert!(current_time >= project.maturity_date, EBondNotMatured);
         
         // Calculate redemption amount (principal + interest)
-        let principal = token.price;
-        let time_held = if (current_time > project.maturity_date) {
-            project.maturity_date - token.purchase_date
-        } else {
-            current_time - token.purchase_date
-        };
+        let principal = token.amount;
+        
+        // Calculate time held from purchase to maturity (in milliseconds)
+        let time_held_ms = project.maturity_date - token.purchase_date;
+        // Convert ms to day
+        let time_held_days = time_held_ms / (1000 * 60 * 60 * 24);
         
         // Simple interest calculation: principal * rate * time / (365 * 10000)
-        // Assuming time is in days and rate is in basis points
-        let interest = (principal * project.annual_interest_rate * time_held) / (365 * 10000);
+        let interest = (principal * project.annual_interest_rate * time_held_days) / (365 * 10000);
         let redemption_amount = principal + interest;
         
         // Check redemption pool has enough funds
@@ -282,9 +293,10 @@ module blue_link::blue_link {
         
         // Update project state
         project.tokens_redeemed = project.tokens_redeemed + 1;
+        project.amount_redeemed = project.amount_redeemed + principal;
         
-        // Check if all tokens are redeemed
-        if (project.tokens_redeemed == project.tokens_sold) {
+        // Check if all amount are redeemed
+        if (project.amount_redeemed >= project.amount_raised) {
             project.active = false;
         };
         
@@ -299,7 +311,7 @@ module blue_link::blue_link {
         });
         
         // Burn the bond NFT
-        let BondToken { id, project_id: _, token_number: _, owner: _, price: _, purchase_date: _, is_redeemed: _ } = token;
+        let BondToken { id, project_id: _, token_number: _, owner: _, amount: _, purchase_date: _, is_redeemed: _ } = token;
         object::delete(id);
     }
 
@@ -328,6 +340,40 @@ module blue_link::blue_link {
         transfer::public_transfer(withdrawn_coin, withdrawer);
     }
 
+    // Pause bond token sale
+    entry fun pause_sale(
+        project: &mut BondProject,
+        ctx: &TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        assert!(project.issuer == sender, ENotBondIssuer);
+        assert!(project.active, EInvalidParameter); // Can only pause if currently active
+        
+        project.active = false;
+        
+        event::emit(SalePaused {
+            project_id: object::uid_to_inner(&project.id),
+            paused_by: sender,
+        });
+    }
+
+    // Resume bond token sale
+    entry fun resume_sale(
+        project: &mut BondProject,
+        ctx: &TxContext
+    ) {
+        let sender = tx_context::sender(ctx);
+        assert!(project.issuer == sender, ENotBondIssuer);
+        assert!(!project.active, EInvalidParameter); // Can only resume if currently paused
+        
+        project.active = true;
+        
+        event::emit(SaleResumed {
+            project_id: object::uid_to_inner(&project.id),
+            resumed_by: sender,
+        });
+    }
+
 
     // --- Public view functions ---
     
@@ -335,9 +381,10 @@ module blue_link::blue_link {
     public fun get_bond_project_info(project: &BondProject): (
         String, // bond_name
         address, // issuer
-        u64, // total_supply
-        u64, // token_price
-        u64, // tokens_sold
+        u64, // total_amount (募集總額度)
+        u64, // amount_raised (已募集金額)
+        u64, // amount_redeemed (已贖回金額)
+        u64, // tokens_issued (已發行代幣數)
         u64, // tokens_redeemed
         u64, // annual_interest_rate
         u64, // maturity_date
@@ -349,9 +396,10 @@ module blue_link::blue_link {
         return(
             project.bond_name,
             project.issuer,
-            project.total_supply,
-            project.price,
-            project.tokens_sold,
+            project.total_amount,
+            project.amount_raised,
+            project.amount_redeemed,
+            project.tokens_issued,
             project.tokens_redeemed,
             project.annual_interest_rate,
             project.maturity_date,
@@ -367,7 +415,7 @@ module blue_link::blue_link {
         ID, // project_id
         u64, // token_number
         address, // owner
-        u64, // purchase_price
+        u64, // amount (購買金額)
         u64, // purchase_date
         bool // is_redeemed
     ) {
@@ -375,7 +423,7 @@ module blue_link::blue_link {
             token.project_id,
             token.token_number,
             token.owner,
-            token.price,
+            token.amount,
             token.purchase_date,
             token.is_redeemed
         )
@@ -391,10 +439,68 @@ module blue_link::blue_link {
         object::uid_to_inner(&token.id)
     }
 
-    // Get available tokens for sale
-    public fun get_available_tokens(project: &BondProject): u64 {
-        project.total_supply - project.tokens_sold
+    // Get available capacity (remaining amount that can be raised)
+    public fun get_available_capacity(project: &BondProject): u64 {
+        project.total_amount - project.amount_raised
+    }
+
+    // Calculate redemption amount for a bond token (principal + interest)
+    public fun calculate_redemption_amount(
+        project: &BondProject,
+        token: &BondToken,
+        clock: &Clock
+    ): u64 {
+        let current_time = clock::timestamp_ms(clock);
+        
+        // Calculate time held from purchase to maturity (in milliseconds)
+        let maturity_time = if (current_time >= project.maturity_date) {
+            project.maturity_date
+        } else {
+            current_time
+        };
+        
+        let time_held_ms = maturity_time - token.purchase_date;
+        // Convert to days: ms -> seconds -> days
+        let time_held_days = time_held_ms / (1000 * 60 * 60 * 24);
+        
+        let principal = token.amount;
+        // Simple interest calculation: principal * rate * time / (365 * 10000)
+        let interest = (principal * project.annual_interest_rate * time_held_days) / (365 * 10000);
+        
+        principal + interest
+    }
+
+    // Check if bond is currently redeemable
+    public fun is_bond_redeemable(project: &BondProject, clock: &Clock): bool {
+        let current_time = clock::timestamp_ms(clock);
+        current_time >= project.maturity_date && project.redeemable
+    }
+
+    // Get sale progress (amount_raised, total_amount, percentage)
+    public fun get_sale_progress(project: &BondProject): (u64, u64, u64) {
+        let amount_raised = project.amount_raised;
+        let total_amount = project.total_amount;
+        let percentage = if (total_amount > 0) {
+            (amount_raised * 100) / total_amount
+        } else {
+            0
+        };
+        (amount_raised, total_amount, percentage)
+    }
+
+    // Get total funds raised
+    public fun get_total_raised(project: &BondProject): u64 {
+        balance::value(&project.raised_funds)
+    }
+
+    // Get redemption pool balance
+    public fun get_redemption_pool_balance(project: &BondProject): u64 {
+        balance::value(&project.redemption_pool)
+    }
+
+    // Get number of tokens remaining to be redeemed
+    public fun get_tokens_pending_redemption(project: &BondProject): u64 {
+        project.tokens_issued - project.tokens_redeemed
     }
 }
-
 

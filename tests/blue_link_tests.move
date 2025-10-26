@@ -36,9 +36,8 @@ module blue_link::blue_link_tests {
         ts::next_tx(scenario, ISSUER);
         {
             blue_link::create_bond_project(
-                b"Green Energy Bond",
-                b"Government",
-                b"Bond for renewable energy projects",
+                b"Palau",           // issuer_name
+                b"Sea Environment Protected Bond",    // bond_name
                 TOTAL_SUPPLY,
                 TOKEN_PRICE,
                 ANNUAL_RATE,
@@ -48,9 +47,9 @@ module blue_link::blue_link_tests {
         };
     }
 
-    // Test 1: Create bond project successfully
+    // Test 1: Create bond project
     #[test]
-    fun test_create_bond_project_success() {
+    fun test_create_bond_project() {
         let mut scenario = setup_test();
         
         create_test_bond_project(&mut scenario);
@@ -60,11 +59,12 @@ module blue_link::blue_link_tests {
         {
             let project = ts::take_from_sender<BondProject>(&scenario);
             
-            let (bond_name, _description, issuer, total_supply, token_price, 
+            let (bond_name, issuer, total_supply, token_price, 
                  tokens_sold, tokens_redeemed, annual_rate, maturity, 
-                 raised_funds, redemption_pool, status) = blue_link::get_bond_project_info(&project);
+                 raised_funds, redemption_pool, active_status, redeemable_status) = 
+                 blue_link::get_bond_project_info(&project);
             
-            assert!(bond_name == string::utf8(b"Green Energy Bond"), 0);
+            assert!(bond_name == string::utf8(b"Sea Environment Protected Bond"), 0);
             assert!(issuer == ISSUER, 1);
             assert!(total_supply == TOTAL_SUPPLY, 2);
             assert!(token_price == TOKEN_PRICE, 3);
@@ -74,7 +74,8 @@ module blue_link::blue_link_tests {
             assert!(maturity == MATURITY_DATE, 7);
             assert!(raised_funds == 0, 8);
             assert!(redemption_pool == 0, 9);
-            assert!(status == 0, 10); // BOND_STATUS_FUNDRAISING
+            assert!(active_status == true, 10);
+            assert!(redeemable_status == false, 11);
             
             ts::return_to_sender(&scenario, project);
         };
@@ -82,9 +83,9 @@ module blue_link::blue_link_tests {
         ts::end(scenario);
     }
 
-    // Test 2: Buy bond tokens successfully
+    // Test 2: Buy bond tokens
     #[test]
-    fun test_buy_bond_tokens_success() {
+    fun test_buy_bond_rwa_tokens() {
         let mut scenario = setup_test();
         
         create_test_bond_project(&mut scenario);
@@ -95,10 +96,10 @@ module blue_link::blue_link_tests {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(5 * TOKEN_PRICE, ts::ctx(&mut scenario));
             
-            blue_link::buy_bond_tokens(&mut project, 5, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 5, payment, ts::ctx(&mut scenario));
             
             // Verify project state
-            let (_, _, _, _, _, tokens_sold, _, _, _, raised_funds, _, _) = 
+            let (_, _, _, _, tokens_sold, _, _, _, raised_funds, _, _, _) = 
                 blue_link::get_bond_project_info(&project);
             assert!(tokens_sold == 5, 0);
             assert!(raised_funds == 5 * TOKEN_PRICE, 1);
@@ -128,7 +129,7 @@ module blue_link::blue_link_tests {
         {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(30 * TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 30, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 30, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -137,7 +138,7 @@ module blue_link::blue_link_tests {
         {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(20 * TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 20, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 20, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -145,7 +146,7 @@ module blue_link::blue_link_tests {
         ts::next_tx(&mut scenario, ISSUER);
         {
             let project = ts::take_from_sender<BondProject>(&scenario);
-            let (_, _, _, _, _, tokens_sold, _, _, _, raised_funds, _, _) = 
+            let (_, _, _, _, tokens_sold, _, _, _, raised_funds, _, _, _) = 
                 blue_link::get_bond_project_info(&project);
             assert!(tokens_sold == 50, 0);
             assert!(raised_funds == 50 * TOKEN_PRICE, 1);
@@ -168,7 +169,7 @@ module blue_link::blue_link_tests {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             // Try to buy 5 tokens but only pay for 4
             let payment = coin::mint_for_testing<SUI>(4 * TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 5, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 5, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -188,7 +189,7 @@ module blue_link::blue_link_tests {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             // Try to buy more than total supply
             let payment = coin::mint_for_testing<SUI>(150 * TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 150, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 150, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -207,7 +208,7 @@ module blue_link::blue_link_tests {
         {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(0, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 0, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 0, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -226,7 +227,7 @@ module blue_link::blue_link_tests {
         {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(10 * TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 10, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 10, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -236,7 +237,7 @@ module blue_link::blue_link_tests {
             let mut project = ts::take_from_sender<BondProject>(&scenario);
             blue_link::withdraw_raised_funds(&mut project, 5 * TOKEN_PRICE, ts::ctx(&mut scenario));
             
-            let (_, _, _, _, _, _, _, _, _, raised_funds, _, _) = 
+            let (_, _, _, _, _, _, _, _, raised_funds, _, _, _) = 
                 blue_link::get_bond_project_info(&project);
             assert!(raised_funds == 5 * TOKEN_PRICE, 0);
             
@@ -267,7 +268,7 @@ module blue_link::blue_link_tests {
         {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(10 * TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 10, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 10, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -296,7 +297,7 @@ module blue_link::blue_link_tests {
             let payment = coin::mint_for_testing<SUI>(150 * TOKEN_PRICE, ts::ctx(&mut scenario));
             blue_link::deposit_redemption_funds(&mut project, payment, ts::ctx(&mut scenario));
             
-            let (_, _, _, _, _, _, _, _, _, _, redemption_pool, _) = 
+            let (_, _, _, _, _, _, _, _, _, redemption_pool, _, _) = 
                 blue_link::get_bond_project_info(&project);
             assert!(redemption_pool == 150 * TOKEN_PRICE, 0);
             
@@ -337,7 +338,7 @@ module blue_link::blue_link_tests {
         {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(5 * TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 5, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 5, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -361,7 +362,7 @@ module blue_link::blue_link_tests {
             
             blue_link::redeem_bond_token(&mut project, token, ts::ctx(&mut scenario));
             
-            let (_, _, _, _, _, _, tokens_redeemed, _, _, _, _, _) = 
+            let (_, _, _, _, _, tokens_redeemed, _, _, _, _, _, _) = 
                 blue_link::get_bond_project_info(&project);
             assert!(tokens_redeemed == 1, 0);
             
@@ -389,13 +390,12 @@ module blue_link::blue_link_tests {
         ts::next_tx(&mut scenario, ISSUER);
         {
             blue_link::create_bond_project(
-                b"Test Bond",
-                b"Issuer",
-                b"Description",
+                b"Issuer",              // issuer_name
+                b"Test Bond",           // bond_name
                 TOTAL_SUPPLY,
                 TOKEN_PRICE,
                 ANNUAL_RATE,
-                1000000, // Far future maturity
+                1000000,                // Far future maturity
                 ts::ctx(&mut scenario)
             );
         };
@@ -405,7 +405,7 @@ module blue_link::blue_link_tests {
         {
             let mut project = ts::take_from_address<BondProject>(&scenario, ISSUER);
             let payment = coin::mint_for_testing<SUI>(TOKEN_PRICE, ts::ctx(&mut scenario));
-            blue_link::buy_bond_tokens(&mut project, 1, payment, ts::ctx(&mut scenario));
+            blue_link::buy_bond_rwa_tokens(&mut project, 1, payment, ts::ctx(&mut scenario));
             ts::return_to_address(ISSUER, project);
         };
         
@@ -444,17 +444,6 @@ module blue_link::blue_link_tests {
             // Test get_available_tokens
             let available = blue_link::get_available_tokens(&project);
             assert!(available == TOTAL_SUPPLY, 0);
-            
-            // Test is_bond_matured
-            let is_matured = blue_link::is_bond_matured(&project, MATURITY_DATE + 1);
-            assert!(is_matured == true, 1);
-            
-            let not_matured = blue_link::is_bond_matured(&project, MATURITY_DATE - 1);
-            assert!(not_matured == false, 2);
-            
-            // Test get_total_market_value
-            let market_value = blue_link::get_total_market_value(&project);
-            assert!(market_value == TOTAL_SUPPLY * TOKEN_PRICE, 3);
             
             ts::return_to_sender(&scenario, project);
         };
