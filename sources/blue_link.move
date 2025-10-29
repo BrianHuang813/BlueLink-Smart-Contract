@@ -6,6 +6,8 @@ module blue_link::blue_link {
     use sui::sui::SUI; // will use USDC or self-minted coin as currency.
     use sui::clock::{Self, Clock};
     use std::string::{Self, String};
+    use sui::display;
+    use sui::package;
 
     
     // --- Error codes ---
@@ -28,6 +30,9 @@ module blue_link::blue_link {
     const EInsufficientRedemptionFunds: u64 = 402; // Insufficient redemption funds
     const EBondAlreadyRedeemed: u64 = 403; // Bond token already redeemed
 
+    // --- One-Time Witness for Display ---
+    public struct BLUE_LINK has drop {}
+
 
     // --- Struct definitions ---
     // Bond project - represents a tokenized bond
@@ -36,6 +41,8 @@ module blue_link::blue_link {
         issuer: address, // Bond issuer
         issuer_name: String,
         bond_name: String,
+        bond_image_url: String, // URL for bond project image (displayed on project page)
+        token_image_url: String, // URL for minted token NFT image (different from project image)
         total_amount: u64, // Total bond amount (募集總額度)
         amount_raised: u64, // Amount already raised (已募集金額)
         amount_redeemed: u64, // Amount already redeemed (已贖回金額)
@@ -48,16 +55,21 @@ module blue_link::blue_link {
         redeemable: bool, // Whether bond is redeemable
         raised_funds: Balance<SUI>, // Funds raised from token sales
         redemption_pool: Balance<SUI>, // Pool for redemption (principal + interest)
+        metadata_url: String,  // URL pointing to full metadata (Arweave)
     }
 
     // Bond token NFT - represents ownership of a portion of the bond
     public struct BondToken has key, store {
         id: UID,
         project_id: ID, // Associated bond project
+        bond_name: String, // Bond name (copied from project for display)
+        token_image_url: String, // URL for NFT image (different from project image)
         token_number: u64, // Sequential token number
         owner: address, // Token owner
         amount: u64, // Amount invested in this token (購買金額)
         purchase_date: u64, // Unix timestamp of purchase
+        maturity_date: u64, // Unix timestamp of maturity date (copied from project)
+        annual_interest_rate: u64, // Annual interest rate in basis points (copied from project)
         is_redeemed: bool, // Whether token has been redeemed
     }
 
@@ -115,15 +127,41 @@ module blue_link::blue_link {
     }
 
 
+    // --- Module Initializer ---
+    // This function is called once when the module is published
+    fun init(otw: BLUE_LINK, ctx: &mut TxContext) {
+        // Claim publisher capability
+        let publisher = package::claim(otw, ctx);
+        
+        // Create display for BondToken NFT
+        let mut bond_token_display = display::new<BondToken>(&publisher, ctx);
+        
+        // Set display fields - these will be shown in wallets and NFT marketplaces
+        display::add(&mut bond_token_display, string::utf8(b"name"), string::utf8(b"Related Bond: {bond_name}"));
+        display::add(&mut bond_token_display, string::utf8(b"description"), string::utf8(b"Investment Amount: {amount} SUI | Annual Interest Rate: {annual_interest_rate} basis points"));
+        display::add(&mut bond_token_display, string::utf8(b"image_url"), string::utf8(b"{token_image_url}"));
+
+        // Update the display object
+        display::update_version(&mut bond_token_display);
+        
+        // Transfer display and publisher to sender
+        transfer::public_transfer(bond_token_display, tx_context::sender(ctx));
+        transfer::public_transfer(publisher, tx_context::sender(ctx));
+    }
+
+
     // --- Entry Functions ---
     
     // Create a new bond project
     entry fun create_bond_project(
         issuer_name: vector<u8>,
         bond_name: vector<u8>,
+        bond_image_url: vector<u8>, // Image URL for the bond project
+        token_image_url: vector<u8>, // Image URL for minted token NFTs 
         total_amount: u64, // Total bond amount to raise (募集總額度)
         annual_interest_rate: u64, // in basis points
         maturity_date: u64, // Unix timestamp in milliseconds
+        metadata_url: vector<u8>, // URL pointing to full metadata (Arweave),
         clock: &Clock,
         ctx: &mut TxContext
     ) {
@@ -140,6 +178,8 @@ module blue_link::blue_link {
             issuer,
             issuer_name: string::utf8(issuer_name),
             bond_name: string::utf8(bond_name),
+            bond_image_url: string::utf8(bond_image_url),
+            token_image_url: string::utf8(token_image_url),
             total_amount,
             amount_raised: 0,
             amount_redeemed: 0,
@@ -152,6 +192,7 @@ module blue_link::blue_link {
             redeemable: false,
             raised_funds: balance::zero<SUI>(),
             redemption_pool: balance::zero<SUI>(),
+            metadata_url: string::utf8(metadata_url),
         };
 
         // Emit event of creating bond projects
@@ -198,10 +239,14 @@ module blue_link::blue_link {
         let token = BondToken {
             id: token_id,
             project_id,
+            bond_name: project.bond_name, // Copy bond name for display
+            token_image_url: project.token_image_url, // Use token-specific image URL
             token_number: project.tokens_issued + 1,
             owner: buyer,
             amount: purchase_amount,
             purchase_date,
+            maturity_date: project.maturity_date, // Copy maturity date so token is self-contained
+            annual_interest_rate: project.annual_interest_rate, // Copy interest rate for calculation
             is_redeemed: false,
         };
         
@@ -266,20 +311,20 @@ module blue_link::blue_link {
         assert!(token.owner == redeemer, ENotTokenOwner);
         assert!(!token.is_redeemed, EBondAlreadyRedeemed);
         
-        // Verify bond has matured
+        // Verify bond has matured 
         let current_time = clock::timestamp_ms(clock);
-        assert!(current_time >= project.maturity_date, EBondNotMatured);
+        assert!(current_time >= token.maturity_date, EBondNotMatured);
         
         // Calculate redemption amount (principal + interest)
         let principal = token.amount;
         
         // Calculate time held from purchase to maturity (in milliseconds)
-        let time_held_ms = project.maturity_date - token.purchase_date;
+        let time_held_ms = token.maturity_date - token.purchase_date;
         // Convert ms to day
         let time_held_days = time_held_ms / (1000 * 60 * 60 * 24);
         
-        // Simple interest calculation: principal * rate * time / (365 * 10000)
-        let interest = (principal * project.annual_interest_rate * time_held_days) / (365 * 10000);
+        // Simple interest calculation using rate stored in token
+        let interest = (principal * token.annual_interest_rate * time_held_days) / (365 * 10000);
         let redemption_amount = principal + interest;
         
         // Check redemption pool has enough funds
@@ -311,7 +356,19 @@ module blue_link::blue_link {
         });
         
         // Burn the bond NFT
-        let BondToken { id, project_id: _, token_number: _, owner: _, amount: _, purchase_date: _, is_redeemed: _ } = token;
+        let BondToken { 
+            id, 
+            project_id: _, 
+            bond_name: _,
+            token_image_url: _,
+            token_number: _, 
+            owner: _, 
+            amount: _, 
+            purchase_date: _, 
+            maturity_date: _,
+            annual_interest_rate: _,
+            is_redeemed: _ 
+        } = token;
         object::delete(id);
     }
 
@@ -379,23 +436,32 @@ module blue_link::blue_link {
     
     // Get bond project information
     public fun get_bond_project_info(project: &BondProject): (
-        String, // bond_name
-        address, // issuer
-        u64, // total_amount (募集總額度)
-        u64, // amount_raised (已募集金額)
-        u64, // amount_redeemed (已贖回金額)
-        u64, // tokens_issued (已發行代幣數)
-        u64, // tokens_redeemed
-        u64, // annual_interest_rate
-        u64, // maturity_date
-        u64, // raised_funds
-        u64, // redemption_pool
-        bool,  // active_status
-        bool,  // redeemable_status
+        address,  // issuer
+        String,   // issuer_name
+        String,   // bond_name
+        String,   // bond_image_url
+        String,   // token_image_url
+        String,   // metadata_url
+        u64,      // total_amount (募集總額度)
+        u64,      // amount_raised (已募集金額)
+        u64,      // amount_redeemed (已贖回金額)
+        u64,      // tokens_issued (已發行代幣數)
+        u64,      // tokens_redeemed
+        u64,      // annual_interest_rate
+        u64,      // maturity_date
+        u64,      // issue_date
+        u64,      // raised_funds
+        u64,      // redemption_pool
+        bool,     // active_status
+        bool,     // redeemable_status
     ) {
         return(
-            project.bond_name,
             project.issuer,
+            project.issuer_name,
+            project.bond_name,
+            project.bond_image_url,
+            project.token_image_url,
+            project.metadata_url,
             project.total_amount,
             project.amount_raised,
             project.amount_redeemed,
@@ -403,6 +469,7 @@ module blue_link::blue_link {
             project.tokens_redeemed,
             project.annual_interest_rate,
             project.maturity_date,
+            project.issue_date,
             balance::value(&project.raised_funds),
             balance::value(&project.redemption_pool),
             project.active, 
@@ -413,18 +480,26 @@ module blue_link::blue_link {
     // Get bond token information
     public fun get_bond_token_info(token: &BondToken): (
         ID, // project_id
+        String, // bond_name
+        String, // token_image_url
         u64, // token_number
         address, // owner
         u64, // amount (購買金額)
         u64, // purchase_date
+        u64, // maturity_date
+        u64, // annual_interest_rate
         bool // is_redeemed
     ) {
         return(
             token.project_id,
+            token.bond_name,
+            token.token_image_url,
             token.token_number,
             token.owner,
             token.amount,
             token.purchase_date,
+            token.maturity_date,
+            token.annual_interest_rate,
             token.is_redeemed
         )
     }
@@ -446,15 +521,14 @@ module blue_link::blue_link {
 
     // Calculate redemption amount for a bond token (principal + interest)
     public fun calculate_redemption_amount(
-        project: &BondProject,
         token: &BondToken,
         clock: &Clock
     ): u64 {
         let current_time = clock::timestamp_ms(clock);
         
         // Calculate time held from purchase to maturity (in milliseconds)
-        let maturity_time = if (current_time >= project.maturity_date) {
-            project.maturity_date
+        let maturity_time = if (current_time >= token.maturity_date) {
+            token.maturity_date
         } else {
             current_time
         };
@@ -464,8 +538,8 @@ module blue_link::blue_link {
         let time_held_days = time_held_ms / (1000 * 60 * 60 * 24);
         
         let principal = token.amount;
-        // Simple interest calculation: principal * rate * time / (365 * 10000)
-        let interest = (principal * project.annual_interest_rate * time_held_days) / (365 * 10000);
+        // Simple interest calculation using rate from token
+        let interest = (principal * token.annual_interest_rate * time_held_days) / (365 * 10000);
         
         principal + interest
     }
