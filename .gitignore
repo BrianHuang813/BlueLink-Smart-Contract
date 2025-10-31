@@ -3,3 +3,4 @@ build/*
 .trace
 .coverage*
 FRONTEND_API_GUIDE.md
+CHANGELOG_AND_INTEGRATION_GUIDE.md
